@@ -17,7 +17,6 @@ object CurlJsonData { // makes curl requesr with JSON input (and possibly output
   /**
    * Used for closing DB connections implicitly.
    * Also used for writing / reading to files
-   * Code is borrowed - need to check correctness.
    * @author From the book "Beginning Scala"
    */
   def using[A <: {def close(): Unit}, B](param: A)(f: A => B): B =
