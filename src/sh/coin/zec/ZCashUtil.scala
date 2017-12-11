@@ -14,11 +14,11 @@ import org.bitcoinj.core.{Transaction => BitjTx}
 import scala.collection.JavaConversions._
 
 // zcashd is similar to bitcoind in terms of t-addresses
-object ZcashdAPI extends BitcoindAPI("username", "password", "http://localhost:9332") // last param is RPC host address
+object ZCashdAPI extends BitcoindAPI("username", "password", "http://localhost:9332") // last param is RPC host address
 
 object ZCashUtil {    
 
-  var isProdNet = true // set to false for testnet
+  var isProdNet = false // set to true for mainnet
   
   def getNetParam = if (isProdNet) MainNetParams.get else TestNet3Params.get    
   
@@ -52,37 +52,38 @@ object ZCashUtil {
     decoded.startsWith(prodNetVersionBytesStr) && decoded.size == 44
   }
   
-  // below call requires zcashd running  
-  def getCoinTxFromHex(hex:String):CoinTx = ZCashTx(new BitjTx(getNetParam, Hex.decode(hex)))
+  // below call requires zcashd running  (returns HEX encoded tx)
+  def createGenericTxHex(ins:Array[In], outs:Array[Out]):String = ZCashdAPI.createRawTransaction(ins, outs)
   
-  // following returns HEX encoded tx
-  def createGenericTxHex(ins:Array[In], outs:Array[Out]):String = ZcashdAPI.createRawTransaction(ins, outs)
+  // below call requires zcashd running  (returns a Bitcoinj Transaction object)
+  def getCoinTxFromHex(hex:String):CoinTx = ZCashTx(new BitjTx(getNetParam, Hex.decode(hex)))
   
   def createGenericTx(ins:Array[In], outs:Array[Out]) = getCoinTxFromHex(createGenericTxHex(ins, outs))
   
+  // sign using Bitcoinj (unmodified version). Does not need zcashd running
   def signGenericTx[T <: CoinKey](tx:CoinTx, keys:Array[T]): CoinTx = tx match {
     case ZCashTx(t) => 
       val inputs=t.getInputs
-      val sigs=inputs.zipWithIndex.map(x => {
-          val (input, i) = (x._1, x._2)
-          val key = keys.apply(i)
+      val sigs=inputs.zipWithIndex.map{
+        case (input, i) => 
+          val key = keys(i)
           key match {
             case ZCashKey(k) => 
               val connectedPubKeyScript = ScriptBuilder.createOutputScript(k.toAddress(getNetParam));
               val hash=t.hashForSignature(i, connectedPubKeyScript, BitjTx.SigHash.ALL, false);
               (k.sign(hash), (BitjTx.SigHash.ALL.ordinal+1)|(0)); 
           }
-        }
-      )
-      inputs.indices.foreach(i => {
-          keys.apply(i) match {
-            case ZCashKey(key) => 
-              inputs(i).setScriptSig(ScriptBuilder.createInputScript(new TransactionSignature(sigs(i)._1, BitjTx.SigHash.ALL, false), key));
-          }
-        }
+      }
+      
+      inputs.indices.foreach(i => 
+        keys(i) match {
+          case ZCashKey(key) => 
+            inputs(i).setScriptSig(ScriptBuilder.createInputScript(new TransactionSignature(sigs(i)._1, BitjTx.SigHash.ALL, false), key));
+          case any => throw new Exception(s"Unsupported Key Type: $any")
+        }        
       )
       ZCashTx(t)
-    case any => throw new Exception(s"Unsupported TxType: $any")
+    case any => throw new Exception(s"Unsupported Tx Type: $any")
   }
 
 }
@@ -110,28 +111,29 @@ object ZCashTest extends App {
   val addr2 = key2.getAddress // "tmMKum67DryZKcPaqjmSGv2CERLFriF3zei" (testnet)
   val addr3 = key3.getAddress // "tmGL4Hjcc8J1rkikD7jQqRvQvrpKtq7GbJW" (testnet
   
+  // In represents pairs of "txid" and "vOut" (i.e., a UTXO in Bitcoin)
   val in1 = In("63fbf20299883b087f1e47b81880ae5cd43150d56dce5b69d5eac1b669450a30", 0)
   val in2 = In("b2b7217210316e680ecd5ebbe38b6debfc1e2486f6f9a1cca6bdfe34ff32b274", 1)
   
-  ZcashdAPI.importAddress(addr1)
-  ZcashdAPI.importAddress(addr2)
-  ZcashdAPI.importAddress(addr3)
+  val out1 = Out(addr2, 89900000) // send to addr2
+  val out2 = Out(addr3, 189900000) // send to addr3
   
-  val out1 = Out(addr2, 89900000)
-  val out2 = Out(addr3, 189900000)
   
   val tx = createGenericTx(Array(in1, in2), Array(out1, out2)) // last param is "Satoshis" to send
   
   println("UNSIGNED HEX tx = "+tx.coinSerializeHex)
   
-  signGenericTx(tx, Array(key2))
+  signGenericTx(
+    tx, 
+    Array(key2, key2) // As many number of keys as inputs. Both input belong to key2 in this example
+  )
   
   println("SIGNED HEX tx = "+tx.coinSerializeHex)
   
-  ZcashdAPI.pushTx(tx.coinSerializeHex)
+  ZCashdAPI.pushTx(tx.coinSerializeHex)
 
   // Below example to generate bitcoinj Tx from hex
-  ZCashUtil.getCoinTxFromHex("""01000000034fe292155fb8491790dbd4d26b9200e02bdebc23240428d81f36454720fd50250000000000ffffffff74b232ff34febda6cca1f9f686241efceb6d8be3bb5ecd0e686e31107221b7b20100000000ffffffff19e7b1ed3a868f1a4259cabc61b92709483355bf3e9505dc08dc373cc1d992470200000000ffffffff02a0860100000000001976a914ccce63775e2982ce3da3b4b881eabfa43d96c3e588ac400d0300000000001976a914489180dd92291aebf87353ad17b286210e4100bd88ac00000000""")
+  val bitjTx:CoinTx = ZCashUtil.getCoinTxFromHex("01000000034fe292155fb8491790dbd4d26b9200e02bdebc23240428d81f36454720fd50250000000000ffffffff74b232ff34febda6cca1f9f686241efceb6d8be3bb5ecd0e686e31107221b7b20100000000ffffffff19e7b1ed3a868f1a4259cabc61b92709483355bf3e9505dc08dc373cc1d992470200000000ffffffff02a0860100000000001976a914ccce63775e2982ce3da3b4b881eabfa43d96c3e588ac400d0300000000001976a914489180dd92291aebf87353ad17b286210e4100bd88ac00000000")
   
     
 }
